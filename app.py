@@ -38,7 +38,7 @@ def search_businesses():
                 'message': 'Query and location are required'
             }), 400
         
-        # Construct search query
+        
         search_query = f"{query} in {location}"
         
         # API Request
@@ -75,7 +75,7 @@ def search_businesses():
                 'message': f'API request failed with status {response.status_code}'
             }), response.status_code
         
-        # Parse response
+        
         api_data = response.json()
         
         if api_data.get('status') == 'OK':
