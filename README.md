@@ -6,7 +6,7 @@ A comprehensive web application that helps users discover and explore local busi
 - [web01](http://54.208.2.38/)
 - [web02](http://3.84.40.59/)
 - [lb01](http://54.175.245.157/)
-- [Demo Video]()
+- [Demo Video](https://youtu.be/V8goWIHTKEk)
 
 ![Web Application screenshot](<web app Screenshot 2025-11-24 175957.png>)
 
