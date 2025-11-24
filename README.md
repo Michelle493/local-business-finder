@@ -2,8 +2,13 @@
 
 A comprehensive web application that helps users discover and explore local businesses in any location worldwide. Built with Flask, modern frontend technologies, and powered by the OpenWeb Ninja Local Business Search API.
 
+## Links
+- [web01](http://54.208.2.38/)
+- [web02](http://3.84.40.59/)
+- [lb01](http://54.175.245.157/)
+- [Demo Video]()
 
-![Web Application sreenshot ](<web app Screenshot 2025-11-24 175957.png>)
+![Web Application screenshot](<web app Screenshot 2025-11-24 175957.png>)
 
 ## 📋 Table of Contents
 
@@ -78,7 +83,7 @@ This application solves a **real, practical problem**: finding local businesses 
 ### Infrastructure
 - **Nginx**: Web server and reverse proxy
 - **Systemd**: Service management
-- **Load Balancer**: Traffic distribution (Nginx or HAProxy)
+- **Load Balancer**: Traffic distribution (HAProxy)
 
 ---
 
@@ -170,8 +175,8 @@ Open your browser and navigate to: `http://localhost:5000`
 #### Step 1: Prepare Your Servers
 ```bash
 # SSH into each server
-ssh ubuntu@http://54.208.2.38
-ssh ubuntu@http://3.84.40.59/
+ssh ubuntu@54.208.2.38
+ssh ubuntu@3.84.40.59
 ```
 
 #### Step 2: Install System Dependencies
@@ -275,63 +280,164 @@ sudo systemctl status business-finder
 
 **Repeat Steps 1-6 on both Web01 and Web02**
 
-### Part 2: Load Balancer Configuration (Lb01)
+### Part 2: HAProxy Load Balancer Configuration (Lb01)
 
-#### Step 1: Install Nginx on Load Balancer
+#### Step 1: Install HAProxy on Load Balancer
 ```bash
-ssh ubuntu@http://54.175.245.157/
+ssh ubuntu@54.175.245.157
 sudo apt-get update
-sudo apt-get install -y nginx
+sudo apt-get install -y haproxy
 ```
 
-#### Step 2: Configure Load Balancer
+#### Step 2: Configure HAProxy
 ```bash
-sudo nano /etc/nginx/sites-available/load-balancer
+sudo nano /etc/haproxy/haproxy.cfg
 ```
 
-Add this configuration (replace with actual IPs):
-```nginx
-upstream backend_servers {
-    least_conn;
-    server web01_ip:80 max_fails=3 fail_timeout=30s;
-    server web02_ip:80 max_fails=3 fail_timeout=30s;
-}
+Replace the entire file with this configuration:
 
-server {
-    listen 80;
-    server_name _;
+```cfg
+global
+    daemon
+    maxconn 4096
+    user haproxy
+    group haproxy
+    log 127.0.0.1 local0 info
+    stats socket /var/run/haproxy/admin.sock mode 660 level admin
 
-    location / {
-        proxy_pass http://backend_servers;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    }
+defaults
+    log     global
+    mode    http
+    option  httplog
+    option  dontlognull
+    option  http-server-close
+    option  forwardfor except 127.0.0.0/8
+    option  redispatch
+    retries 3
+    timeout http-request    10s
+    timeout queue           1m
+    timeout connect         10s
+    timeout client          1m
+    timeout server          1m
+    timeout http-keep-alive 10s
+    timeout check           10s
+    maxconn                 3000
 
-    location /health {
-        proxy_pass http://backend_servers;
-    }
-}
+# Frontend configuration - accepts client connections
+frontend http_front
+    bind *:80
+    stats uri /haproxy?stats
+    stats realm Haproxy\ Statistics
+    stats auth admin:password  # Change this password!
+    
+    # Define ACLs for health checks
+    acl is_health_check path /health
+    
+    # Use health check endpoint for backend selection
+    use_backend health_check if is_health_check
+    
+    # Default to web servers
+    default_backend web_servers
+
+# Backend for health checks
+backend health_check
+    balance roundrobin
+    option httpchk GET /health
+    http-check expect status 200
+    server web01 54.208.2.38:80 check inter 10s fall 3 rise 2
+    server web02 3.84.40.59:80 check inter 10s fall 3 rise 2
+
+# Backend for web servers
+backend web_servers
+    balance leastconn
+    option httpchk GET /health
+    http-check expect status 200
+    cookie SERVERID insert indirect nocache
+    
+    # Web servers with health checks
+    server web01 54.208.2.38:80 check inter 10s fall 3 rise 2 cookie web01
+    server web02 3.84.40.59:80 check inter 10s fall 3 rise 2 cookie web02
+
+    # Error handling
+    errorfile 503 /etc/haproxy/errors/503.http
 ```
 
-#### Step 3: Enable Load Balancer
+#### Step 3: Create Error Page Directory and Files
 ```bash
-sudo ln -s /etc/nginx/sites-available/load-balancer /etc/nginx/sites-enabled/
-sudo rm /etc/nginx/sites-enabled/default
-sudo nginx -t
-sudo systemctl restart nginx
+sudo mkdir -p /etc/haproxy/errors
+sudo nano /etc/haproxy/errors/503.http
 ```
 
-#### Step 4: Test Load Balancing
+Add this content for the 503 error page:
+```html
+HTTP/1.0 503 Service Unavailable
+Cache-Control: no-cache
+Connection: close
+Content-Type: text/html
+
+<html>
+<head>
+    <title>503 Service Unavailable</title>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; padding: 50px; }
+        h1 { color: #d9534f; }
+    </style>
+</head>
+<body>
+    <h1>503 Service Unavailable</h1>
+    <p>All backend servers are currently unavailable.</p>
+    <p>Please try again later.</p>
+</body>
+</html>
+```
+
+#### Step 4: Configure Logging
 ```bash
-# Test from another machine
-curl http://54.175.245.157/
-curl http://54.175.245.157//health
+sudo nano /etc/rsyslog.d/99-haproxy.conf
+```
 
-# Check Nginx access logs on Lb01
-sudo tail -f /var/log/nginx/access.log
+Add:
+```
+$ModLoad imudp
+$UDPServerAddress 127.0.0.1
+$UDPServerRun 514
 
-# You should see requests alternating between web01 and web02
+local0.* -/var/log/haproxy/haproxy.log
+```
+
+```bash
+# Create log directory and file
+sudo mkdir -p /var/log/haproxy
+sudo touch /var/log/haproxy/haproxy.log
+sudo chown syslog:adm /var/log/haproxy/haproxy.log
+
+# Restart rsyslog
+sudo systemctl restart rsyslog
+```
+
+#### Step 5: Enable and Start HAProxy
+```bash
+# Test configuration syntax
+sudo haproxy -f /etc/haproxy/haproxy.cfg -c
+
+# Enable HAProxy to start on boot
+sudo systemctl enable haproxy
+
+# Start HAProxy
+sudo systemctl start haproxy
+
+# Check status
+sudo systemctl status haproxy
+
+# Check if HAProxy is listening on port 80
+sudo netstat -tulpn | grep :80
+```
+
+#### Step 6: Firewall Configuration
+```bash
+# Ensure port 80 is open
+sudo ufw allow 80/tcp
+sudo ufw status
 ```
 
 ### Verification
@@ -343,11 +449,19 @@ sudo tail -f /var/log/nginx/access.log
 2. **Test load balancer**:
    - Visit `http://54.175.245.157/` - should show the application
    - Refresh multiple times - traffic should distribute between servers
+   - Visit `http://54.175.245.157/haproxy?stats` to view statistics (admin/password)
 
 3. **Test failover**:
    - Stop one web server: `sudo systemctl stop business-finder`
    - Load balancer should redirect to the working server
    - Restart server: `sudo systemctl start business-finder`
+
+4. **Test health checks**:
+   ```bash
+   curl http://54.175.245.157/health
+   curl http://54.208.2.38/health
+   curl http://3.84.40.59/health
+   ```
 
 ---
 
@@ -440,9 +554,9 @@ local-business-finder/
 ### Challenge 4: Load Balancer Configuration
 **Problem**: Ensuring even distribution and failover  
 **Solution**:
-- Used least_conn algorithm
-- Implemented health checks
-- Configured appropriate timeouts
+- Used HAProxy with leastconn algorithm
+- Implemented health checks with automatic failover
+- Configured appropriate timeouts and retries
 
 ### Challenge 5: Responsive Design
 **Problem**: Complex layouts breaking on mobile  
@@ -466,6 +580,7 @@ local-business-finder/
 - **Flask**: Web framework by Pallets Projects
 - **Gunicorn**: WSGI server by Benoît Chesneau
 - **Font Awesome**: Icon library by Fonticons, Inc.
+- **HAProxy**: Load balancer by Willy Tarreau
 
 ### Resources
 - Google Maps: Data source via API
@@ -514,7 +629,7 @@ For questions or support regarding this project:
 - Complete search functionality
 - Business details modal
 - Filtering and sorting
-- Deployed with load balancing
+- Deployed with HAProxy load balancing
 
 ---
 
@@ -534,6 +649,7 @@ For questions or support regarding this project:
 3. **XSS Prevention**: HTML escaping implemented
 4. **HTTPS Ready**: Can be configured with SSL certificates
 5. **Rate Limiting**: Prevents API abuse
+6. **Load Balancer Security**: Statistics page protected with authentication
 
 ---
 
@@ -541,7 +657,12 @@ For questions or support regarding this project:
 
 ### Check Application Status
 ```bash
+# Web servers
 sudo systemctl status business-finder
+sudo systemctl status nginx
+
+# Load balancer
+sudo systemctl status haproxy
 ```
 
 ### View Logs
@@ -552,12 +673,33 @@ sudo journalctl -u business-finder -f
 # Nginx logs
 sudo tail -f /var/log/nginx/access.log
 sudo tail -f /var/log/nginx/error.log
+
+# HAProxy logs
+sudo tail -f /var/log/haproxy/haproxy.log
+
+# HAProxy statistics
+echo "show stat" | sudo socat /var/run/haproxy/admin.sock stdio
 ```
 
 ### Restart Services
 ```bash
+# Web servers
 sudo systemctl restart business-finder
 sudo systemctl restart nginx
+
+# Load balancer
+sudo systemctl restart haproxy
+sudo systemctl restart rsyslog
+```
+
+### Health Check Monitoring
+```bash
+# Test from load balancer
+curl http://54.175.245.157/health
+
+# Test individual servers
+curl http://54.208.2.38/health
+curl http://3.84.40.59/health
 ```
 
 ---
@@ -570,7 +712,23 @@ If you encounter issues:
 3. Ensure all services are running
 4. Check network connectivity
 5. Review error messages in browser console
+6. Verify HAProxy configuration: `sudo haproxy -f /etc/haproxy/haproxy.cfg -c`
+
+### Common Troubleshooting Commands:
+
+```bash
+# Check HAProxy status and configuration
+sudo systemctl status haproxy
+sudo haproxy -f /etc/haproxy/haproxy.cfg -c
+
+# Check backend server status through HAProxy
+echo "show stat" | sudo socat /var/run/haproxy/admin.sock stdio
+
+# Test load distribution
+for i in {1..10}; do curl -s http://54.175.245.157/ | grep "Server" || echo "Request $i"; done
+
+# Verify health checks are working
+curl -I http://54.175.245.157/health
+```
 
 ---
-
-**Built with ❤️ for learning and exploration8**
